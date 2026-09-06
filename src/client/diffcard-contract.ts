@@ -4,8 +4,15 @@
  *  contract (one-way dependency). The `declare module` merge restores the slot
  *  key this plugin registers into — the stock ui-tool bundle declares the same
  *  row with the same shape, and interface merging accepts the duplicate
- *  identical declaration. */
-import type { ToolCallBlock } from '@deepseek-ai/dsh-client-runtime/client'
+ *  identical declaration.
+ *
+ *  dsh 0.1.2+ contract: the `@deepseek-ai/dsh-client-runtime` package (which
+ *  used to re-export the conversation block types) was removed upstream, and
+ *  the Host `presentCall`/`presentResult` wire views no longer enter the
+ *  Client. The runtime block types live in `dsh-client-ui-chat/client`, and a
+ *  settled card derives from the durable `tool/result` `meta` payload (the
+ *  tool's `output.presentationMeta` projection, persisted verbatim). */
+import type { ToolCallBlock } from '@deepseek-ai/dsh-client-ui-chat/client'
 import type { DiffHunk } from './DiffViewer.tsx'
 
 /** What the stock ui-tool rows pass to the `tool.call.toolview` keyed slots. */
@@ -18,6 +25,8 @@ export interface ToolCallOwnerProps {
   block: ToolCallBlock
   /** Session workspace root for relative summaries. */
   cwd?: string | undefined
+  /** Host account home; POSIX home-rooted summaries display as `~`. */
+  home?: string | undefined
   /** Open a Tool argument path through the Host. */
   openFile: (path: string) => void
   /** Inspect this call in the trajectory view when available. */
@@ -37,15 +46,23 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 }
 
 /** Narrow a wire `card:'diff'` view's `diffs` to well-formed hunks (same
- *  validation the stock diff-card model applies). */
+ *  validation the stock diff-card model applies). Optional `oldStart`/
+ *  `newStart` — the file-anchored start lines the plugin's host half stamps
+ *  onto applied-hunk metadata — pass through untouched when present (a
+ *  non-number or negative value is rejected so rendering never trusts a
+ *  malformed anchor). */
 function narrowDiffs(diffs: unknown): DiffHunk[] | null {
   if (!Array.isArray(diffs) || diffs.length === 0) return null
   for (const hunk of diffs) {
     if (hunk === null || typeof hunk !== 'object') return null
-    const { path, oldText, newText } = hunk as Record<string, unknown>
+    const { path, oldText, newText, oldStart, newStart } = hunk as Record<string, unknown>
     if (typeof path !== 'string' || (oldText !== null && typeof oldText !== 'string') || typeof newText !== 'string') {
       return null
     }
+    const anchorValid = (value: unknown): value is number =>
+      typeof value === 'number' && Number.isInteger(value) && value > 0
+    if (oldStart !== undefined && !anchorValid(oldStart)) return null
+    if (newStart !== undefined && !anchorValid(newStart)) return null
   }
   return diffs as DiffHunk[]
 }
@@ -70,9 +87,10 @@ function stringArg(args: Record<string, unknown>, key: string): string | undefin
  *  their arguments: an edit renders its literal old_string→new_string
  *  replacement, a write renders its full content as a create (`oldText: null`,
  *  which also represents an overwrite without prior content). Code Dispatch
- *  sub-calls never carry a wire view (the dispatch bridge logs no presentation
- *  metadata), so this args fallback is the only diff material those cards can
- *  render — mirroring what the stock row shows for the same call while running.
+ *  sub-calls never carry wire meta (the core short-circuits `presentationMeta`
+ *  under a parent execution), so this args fallback is the only diff material
+ *  those cards can render — mirroring what the stock row shows for the same
+ *  call while running.
  * @param toolName - the wire Tool name ('edit' or 'write').
  * @param argsRaw - the frozen call arguments.
  * @returns the call-time hunks, or null when the tool or its args do not map.
@@ -102,28 +120,28 @@ function callToolName(block: ToolCallBlock): string {
 }
 
 /** Derive the diff-card props for a tool call, or null when this call is not a
- *  diff card (running calls use the call-time diff; settled calls use the
- *  applied result hunks, which replace the call-time diff). */
+ *  diff card. dsh 0.1.2+ derivation: running calls use the args-derived
+ *  call-time diff (there is no wire call view); settled calls use the applied
+ *  hunks from the durable result `meta` — the channel the plugin's host half
+ *  enhances with real line numbers — and replace the call-time diff. */
 export function diffCardModel(block: ToolCallBlock): DiffCardModel | null {
   const toolName = callToolName(block)
   if (!('kind' in block)) {
-    // Running: the call view may carry the intended diff; the result is absent.
-    const call = block.callView?.card === 'diff' ? block.callView : null
-    const diffs = call === null ? null : narrowDiffs(call.diffs)
-    if (diffs !== null) return { card: { diffs } }
-    // A code-dispatch sub-call has no call view at all; its args still carry
-    // the intended change, so the call-time fallback keeps the row a diff card.
+    // Running: no wire call view exists; the args carry the intended change.
     const fallback = callTimeDiffs(toolName, block.argsRaw)
     return fallback === null ? null : { card: { diffs: fallback } }
   }
-  // Settled: the result view's applied hunks replace the call-time diff.
-  const result = block.resultView?.card === 'diff' ? block.resultView : null
-  const diffs = result === null ? null : narrowDiffs(result.diffs)
-  if (diffs !== null) return { card: { diffs } }
-  // A settled code-dispatch sub-call never carries a result view (the dispatch
-  // bridge logs no presentation metadata). Successful mutations fall back to
-  // the call-time diff from args; errored ones stay on the generic error path,
-  // exactly like the stock row (which surfaces the model-facing error text).
+  // Settled: the applied meta hunks (with the host half's oldStart/newStart)
+  // replace the call-time diff.
+  if (typeof block.meta === 'object' && block.meta !== null && !Array.isArray(block.meta)) {
+    const diffs = narrowDiffs((block.meta as Record<string, unknown>).diffs)
+    if (diffs !== null) return { card: { diffs } }
+  }
+  // A settled code-dispatch sub-call never carries meta (the core skips
+  // `output.presentationMeta` under a parent execution). Successful mutations
+  // fall back to the call-time diff from args; errored ones stay on the
+  // generic error path, exactly like the stock row (which surfaces the
+  // model-facing error text).
   if (block.isError) return null
   const fallback = callTimeDiffs(toolName, block.call?.argsRaw ?? '')
   return fallback === null ? null : { card: { diffs: fallback } }

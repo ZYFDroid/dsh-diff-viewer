@@ -14,7 +14,7 @@ import clsx from 'clsx'
 import {
   DisclosureRow, IconEditOutline16, IconInspectOutline12, StateDot,
 } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { ToolCallBlock, ToolResultNode } from '@deepseek-ai/dsh-client-runtime/client'
+import type { ToolCallBlock, ToolResultNode } from '@deepseek-ai/dsh-client-ui-chat/client'
 // The stock row's stylesheet, imported through the package's exported src
 // subpath and inlined — the takeover row renders with the exact stock chrome.
 import rowCss from '@deepseek-ai/dsh-client-ui-tool/src/client/tool/components/ToolRow.module.css'
@@ -53,7 +53,10 @@ function parseArgs(argsRaw: string): Record<string, unknown> | undefined {
   }
 }
 
-/** Derive the row model for the edit/write variants (stock toolRowModel mirror). */
+/** Derive the row model for the edit/write variants (stock toolRowModel mirror;
+ *  the stock model additionally abbreviates a POSIX-home-rooted summary to `~`,
+ *  which this mirror skips — the plugin never receives `home` from the slot
+ *  owner it declares). */
 function rowModel(toolName: string, block: ToolCallBlock, cwd?: string): {
   variant: ToolRowVariant
   title: string

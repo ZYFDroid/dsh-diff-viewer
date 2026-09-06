@@ -71,6 +71,13 @@ export interface DiffHunk {
   oldText: string | null
   /** Content after the change (the added side). */
   newText: string
+  /** 1-based first line of `oldText` within the file, when the source hunk knows
+   *  it (an applied result hunk anchors both sides). Absent for call-time
+   *  fragments and older logs — the viewer then hides the line-number column
+   *  rather than numbering a fragment from 1 as if it were the whole file. */
+  oldStart?: number | undefined
+  /** 1-based first line of `newText` within the file, when known; see `oldStart`. */
+  newStart?: number | undefined
 }
 
 /** Which row layout a diff renders with. */
@@ -161,20 +168,38 @@ interface WordDiffSegment {
 // ============================================
 
 /**
+ * The line-number bases for one hunk, when the source knows where the hunk's
+ * text starts inside the file. A hunk that carries `oldStart`/`newStart` (an
+ * applied result hunk) numbers its lines from those; a fragment without them
+ * (call-time args, older logs) defaults to 1 — the caller decides whether to
+ * DRAW the numbers at all.
+ */
+export interface DiffLineOffsets {
+  /** 1-based first line of the removed side inside the file. */
+  oldStart?: number | undefined
+  /** 1-based first line of the added side inside the file. */
+  newStart?: number | undefined
+}
+
+/**
  * Pair the two sides line by line: equal runs become context pairs, an added
  * run pairs each new line against an empty left slot, and a removed run
  * preceded by an added run pairs the two sides positionally so their
  * intra-line differences can be marked. The `diff` package's `diffLines`
- * output drives the walk; line numbers are the sides' own 1-based numbers.
+ * output drives the walk; line numbers are the sides' own 1-based numbers,
+ * offset by the hunk's start lines when the source provides them.
  * @param before - the prior content.
  * @param after - the content after the change.
+ * @param offsets - the hunk's file-anchored start lines, when known.
  * @returns one pair per rendered row, in file order.
  */
-export function computePairedLines(before: string, after: string): PairedLine[] {
+export function computePairedLines(before: string, after: string, offsets?: DiffLineOffsets): PairedLine[] {
   const changes = diffLines(before, after)
   const result: PairedLine[] = []
   const beforeLines = before.split('\n')
   const afterLines = after.split('\n')
+  const oldBase = offsets?.oldStart ?? 1
+  const newBase = offsets?.newStart ?? 1
 
   let oldIdx = 0
   let newIdx = 0
@@ -211,10 +236,10 @@ export function computePairedLines(before: string, after: string): PairedLine[] 
 
           result.push({
             left: oldLine !== undefined
-              ? { type: 'delete', content: oldLine, lineNo: oldIdx + j + 1, ...(leftSegments && { wordDiffSegments: leftSegments }) }
+              ? { type: 'delete', content: oldLine, lineNo: oldBase + oldIdx + j, ...(leftSegments && { wordDiffSegments: leftSegments }) }
               : { type: 'empty', content: '' },
             right: newLine !== undefined
-              ? { type: 'add', content: newLine, lineNo: newIdx + j + 1, ...(rightSegments && { wordDiffSegments: rightSegments }) }
+              ? { type: 'add', content: newLine, lineNo: newBase + newIdx + j, ...(rightSegments && { wordDiffSegments: rightSegments }) }
               : { type: 'empty', content: '' },
           })
         }
@@ -227,7 +252,7 @@ export function computePairedLines(before: string, after: string): PairedLine[] 
 
       for (let j = 0; j < count; j++) {
         result.push({
-          left: { type: 'delete', content: beforeLines[oldIdx + j] || '', lineNo: oldIdx + j + 1 },
+          left: { type: 'delete', content: beforeLines[oldIdx + j] || '', lineNo: oldBase + oldIdx + j },
           right: { type: 'empty', content: '' },
         })
       }
@@ -236,15 +261,15 @@ export function computePairedLines(before: string, after: string): PairedLine[] 
       for (let j = 0; j < count; j++) {
         result.push({
           left: { type: 'empty', content: '' },
-          right: { type: 'add', content: afterLines[newIdx + j] || '', lineNo: newIdx + j + 1 },
+          right: { type: 'add', content: afterLines[newIdx + j] || '', lineNo: newBase + newIdx + j },
         })
       }
       newIdx += count
     } else {
       for (let j = 0; j < count; j++) {
         result.push({
-          left: { type: 'context', content: beforeLines[oldIdx + j] || '', lineNo: oldIdx + j + 1 },
-          right: { type: 'context', content: afterLines[newIdx + j] || '', lineNo: newIdx + j + 1 },
+          left: { type: 'context', content: beforeLines[oldIdx + j] || '', lineNo: oldBase + oldIdx + j },
+          right: { type: 'context', content: afterLines[newIdx + j] || '', lineNo: newBase + newIdx + j },
         })
       }
       oldIdx += count
@@ -266,13 +291,16 @@ export function computePairedLines(before: string, after: string): PairedLine[] 
  * {@link computePairedLines} does.
  * @param before - the prior content.
  * @param after - the content after the change.
+ * @param offsets - the hunk's file-anchored start lines, when known.
  * @returns one line per rendered row, in file order.
  */
-export function computeUnifiedLines(before: string, after: string): UnifiedLine[] {
+export function computeUnifiedLines(before: string, after: string, offsets?: DiffLineOffsets): UnifiedLine[] {
   const changes = diffLines(before, after)
   const result: UnifiedLine[] = []
   const beforeLines = before.split('\n')
   const afterLines = after.split('\n')
+  const oldBase = offsets?.oldStart ?? 1
+  const newBase = offsets?.newStart ?? 1
 
   let oldIdx = 0
   let newIdx = 0
@@ -298,7 +326,7 @@ export function computeUnifiedLines(before: string, after: string): UnifiedLine[
             if (!isTooFragmented(wordDiff.changes)) segments = wordDiff.left
           }
           result.push({
-            type: 'delete', content: oldLine, oldLineNo: oldIdx + j + 1,
+            type: 'delete', content: oldLine, oldLineNo: oldBase + oldIdx + j,
             ...(segments !== undefined && { wordDiffSegments: segments }),
           })
         }
@@ -311,7 +339,7 @@ export function computeUnifiedLines(before: string, after: string): UnifiedLine[
             if (!isTooFragmented(wordDiff.changes)) segments = wordDiff.right
           }
           result.push({
-            type: 'add', content: newLine, newLineNo: newIdx + j + 1,
+            type: 'add', content: newLine, newLineNo: newBase + newIdx + j,
             ...(segments !== undefined && { wordDiffSegments: segments }),
           })
         }
@@ -320,13 +348,13 @@ export function computeUnifiedLines(before: string, after: string): UnifiedLine[
         i += 1
       } else {
         for (let j = 0; j < count; j++) {
-          result.push({ type: 'delete', content: beforeLines[oldIdx + j] || '', oldLineNo: oldIdx + j + 1 })
+          result.push({ type: 'delete', content: beforeLines[oldIdx + j] || '', oldLineNo: oldBase + oldIdx + j })
         }
         oldIdx += count
       }
     } else if (change.added) {
       for (let j = 0; j < count; j++) {
-        result.push({ type: 'add', content: afterLines[newIdx + j] || '', newLineNo: newIdx + j + 1 })
+        result.push({ type: 'add', content: afterLines[newIdx + j] || '', newLineNo: newBase + newIdx + j })
       }
       newIdx += count
     } else {
@@ -334,8 +362,8 @@ export function computeUnifiedLines(before: string, after: string): UnifiedLine[
         result.push({
           type: 'context',
           content: afterLines[newIdx + j] || '',
-          oldLineNo: oldIdx + j + 1,
-          newLineNo: newIdx + j + 1,
+          oldLineNo: oldBase + oldIdx + j,
+          newLineNo: newBase + newIdx + j,
         })
       }
       oldIdx += count
@@ -845,6 +873,12 @@ function CollapsedLabel({ count, labels, onExpand }: { count: number; labels: Di
 interface DiffBodyProps {
   before: string
   after: string
+  /** File-anchored start lines of the two sides, when the source hunk knows them. */
+  offsets?: DiffLineOffsets | undefined
+  /** True when the hunk has NO old side (`oldText` was null): a create or
+   *  overwrite whose `newText` is the WHOLE new file — its new side numbers
+   *  from 1 truthfully even without anchors. */
+  wholeFile?: boolean | undefined
   lang?: string | undefined
   viewMode: DiffViewMode
   maxLines?: number | undefined
@@ -860,7 +894,7 @@ interface DiffBodyProps {
  * @param props - the two sides, language hint, mode request, and render site's cap.
  * @returns the diff body element.
  */
-function DiffBody({ before, after, lang, viewMode, maxLines, labels, className }: DiffBodyProps) {
+function DiffBody({ before, after, offsets, wholeFile, lang, viewMode, maxLines, labels, className }: DiffBodyProps) {
   // Re-render when a lazy grammar finishes loading, so a diff that showed
   // plain text while its language's grammar imported picks up highlighting.
   const loaded = useSyncExternalStore(subscribeGrammarLoaded, grammarLoadCount, grammarLoadCount)
@@ -868,14 +902,22 @@ function DiffBody({ before, after, lang, viewMode, maxLines, labels, className }
     () => ({ before: highlightLines(before, lang), after: highlightLines(after, lang) }),
     [before, after, lang, loaded],
   )
-  const pairedLines = useMemo(() => computePairedLines(before, after), [before, after])
-  const unifiedLines = useMemo(() => computeUnifiedLines(before, after), [before, after])
+  const pairedLines = useMemo(() => computePairedLines(before, after, offsets), [before, after, offsets])
+  const unifiedLines = useMemo(() => computeUnifiedLines(before, after, offsets), [before, after, offsets])
 
   // Pure addition or pure deletion: the split mode's other side is empty
   // noise, so it degrades to unified the way PiUI's DiffViewer does.
   const isAddOnly = before.trim() === ''
   const isDeleteOnly = after.trim() === ''
   const mode = isAddOnly || isDeleteOnly ? 'unified' : viewMode
+
+  // Whether any line-number column is truthful. Anchors (driven by the host
+  // half of this plugin) give the hunk's real file positions; a whole-file
+  // new side numbers from 1 genuinely. A bare replacement fragment has NO
+  // truthful numbering — hiding the columns beats implying file positions a
+  // fragment does not carry.
+  const anchored = offsets?.oldStart !== undefined || offsets?.newStart !== undefined
+  const showLineNos = anchored || wholeFile === true
 
   if (pairedLines.length === 0) {
     return <div className={css.noChanges}>{labels.noChanges}</div>
@@ -886,6 +928,9 @@ function DiffBody({ before, after, lang, viewMode, maxLines, labels, className }
       <SplitDiffBody
         pairs={pairedLines}
         tokens={tokens}
+        oldStart={offsets?.oldStart}
+        newStart={offsets?.newStart}
+        showLineNos={showLineNos}
         maxLines={maxLines}
         labels={labels}
         className={className}
@@ -895,6 +940,9 @@ function DiffBody({ before, after, lang, viewMode, maxLines, labels, className }
       <UnifiedDiffBody
         lines={unifiedLines}
         tokens={tokens}
+        oldStart={offsets?.oldStart}
+        newStart={offsets?.newStart}
+        showLineNos={showLineNos}
         maxLines={maxLines}
         labels={labels}
         className={className}
@@ -1010,11 +1058,18 @@ function Viewport({ rows, maxLines, children }: {
  * Side-by-side body: each row is a pair drawn in two panels — left gutter
  * (change bar + old line number) and left content over the removed/context
  * text, then the same for the added side. A collapsed separator renders its
- * buttons in the left gutter and overlays its label across both panels.
+ * buttons in the left gutter and overlays its label across both panels. When
+ * the hunk carries no file anchors the whole gutter is absent — no line
+ * numbers AND no change bars (a bar hugging the text reads as clutter on a
+ * fragment that has no file position), leaving the side's tinted background
+ * as the change signal.
  */
-function SplitDiffBody({ pairs, tokens, maxLines, labels, className }: {
+function SplitDiffBody({ pairs, tokens, oldStart, newStart, showLineNos, maxLines, labels, className }: {
   pairs: PairedLine[]
   tokens: TokenPair
+  oldStart?: number | undefined
+  newStart?: number | undefined
+  showLineNos: boolean
   maxLines: number | undefined
   labels: DiffViewerLabels
   className?: string | undefined
@@ -1034,7 +1089,13 @@ function SplitDiffBody({ pairs, tokens, maxLines, labels, className }: {
   const lineNumberWidth = useMemo(() => lineNumberColumnWidth(
     pairs.reduce((max, pair) => Math.max(max, pair.left.lineNo ?? 0, pair.right.lineNo ?? 0), 0),
   ), [pairs])
-  const gutterWidth = lineNumberWidth + 4
+  // Token rows are indexed within the hunk text; the file-anchored line number
+  // maps back through the side's start line (absent anchors keep the 1-base).
+  const oldBase = oldStart ?? 1
+  const newBase = newStart ?? 1
+  // Without line numbers the gutter (row) disappears entirely — no 4px bar
+  // column hugging the text. The tinted row background alone marks changes.
+  const gutterWidth = showLineNos ? lineNumberWidth + 4 : 0
 
   return (
     <div className={clsx(css.body, className)}>
@@ -1052,15 +1113,36 @@ function SplitDiffBody({ pairs, tokens, maxLines, labels, className }: {
 
             if (isCollapsed(row)) {
               const directions = separatorDirections(row)
-              leftGutter.push(
-                <div key={i} className={clsx(css.separatorSurface, css.separatorRelative)} style={{ height: DIFF_LINE_HEIGHT }}>
-                  <CollapsedExpandButton directions={directions} onExpand={direction => handleExpand(row.id, direction)} width={lineNumberWidth} labels={labels} />
-                  <div className={css.separatorLabelOverlay} style={{ left: lineNumberWidth }}>
-                    <CollapsedLabel count={row.count} labels={labels} onExpand={direction => handleExpand(row.id, direction)} />
-                  </div>
-                </div>,
+              const buttons = (
+                <CollapsedExpandButton
+                  directions={directions}
+                  onExpand={direction => handleExpand(row.id, direction)}
+                  {...(showLineNos ? { width: lineNumberWidth } : {})}
+                  labels={labels}
+                />
               )
-              leftContent.push(<div key={i} className={css.separatorSurface} style={{ height: DIFF_LINE_HEIGHT }} />)
+              const label = <CollapsedLabel count={row.count} labels={labels} onExpand={direction => handleExpand(row.id, direction)} />
+              if (showLineNos) {
+                leftGutter.push(
+                  <div key={i} className={clsx(css.separatorSurface, css.separatorRelative)} style={{ height: DIFF_LINE_HEIGHT }}>
+                    {buttons}
+                    <div className={css.separatorLabelOverlay} style={{ left: lineNumberWidth }}>
+                      {label}
+                    </div>
+                  </div>,
+                )
+              } else {
+                // With no line numbers the gutter is absent (zero width); the
+                // separator's controls move into the left content column where
+                // they have room, spanning the row like a stock diff separator.
+                leftGutter.push(<div key={i} className={css.separatorSurface} style={{ height: DIFF_LINE_HEIGHT }} />)
+                leftContent.push(
+                  <div key={i} className={clsx(css.separatorSurface, css.contentRowNoGutter)} style={{ height: DIFF_LINE_HEIGHT }}>
+                    {buttons}
+                    {label}
+                  </div>,
+                )
+              }
               rightGutter.push(<div key={i} className={css.separatorSurface} style={{ height: DIFF_LINE_HEIGHT }} />)
               rightContent.push(<div key={i} className={css.separatorSurface} style={{ height: DIFF_LINE_HEIGHT }} />)
               continue
@@ -1075,27 +1157,31 @@ function SplitDiffBody({ pairs, tokens, maxLines, labels, className }: {
             /* v8 ignore next 3 -- left rows are delete/context/empty only */
             leftGutter.push(
               <div key={i} className={clsx(css.gutterRow, left.type === 'add' ? css.rowAdd : left.type === 'delete' ? css.rowDelete : left.type === 'empty' ? css.rowEmpty : css.rowContext)} style={left.type === 'empty' ? { height: DIFF_LINE_HEIGHT, backgroundPosition: `5px ${-rowTop}px` } : undefined}>
-                <ChangeBar type={left.type} rowTop={rowTop} />
-                <LineNumberCell lineNo={left.lineNo} width={lineNumberWidth} tone={left.type === 'add' || left.type === 'delete' ? 'changed' : 'context'} />
+                {showLineNos && <ChangeBar type={left.type} rowTop={rowTop} />}
+                {showLineNos && (
+                  <LineNumberCell lineNo={left.lineNo} width={lineNumberWidth} tone={left.type === 'add' || left.type === 'delete' ? 'changed' : 'context'} />
+                )}
               </div>,
             )
             /* v8 ignore next 2 -- left rows are delete/context/empty only */
             leftContent.push(
-              <div key={i} className={clsx(css.contentRow, left.type === 'empty' ? css.rowEmpty : left.type === 'add' ? css.rowAdd : left.type === 'delete' ? css.rowDelete : css.rowContext)} style={left.type === 'empty' ? { backgroundPosition: `5px ${-rowTop}px` } : undefined}>
-                <LineContent line={left} tokens={left.lineNo !== undefined ? tokens.before?.[left.lineNo - 1] : undefined} />
+              <div key={i} className={clsx(css.contentRow, !showLineNos && css.contentRowNoGutter, left.type === 'empty' ? css.rowEmpty : left.type === 'add' ? css.rowAdd : left.type === 'delete' ? css.rowDelete : css.rowContext)} style={left.type === 'empty' ? { backgroundPosition: `5px ${-rowTop}px` } : undefined}>
+                <LineContent line={left} tokens={left.lineNo !== undefined ? tokens.before?.[left.lineNo - oldBase] : undefined} />
               </div>,
             )
             /* v8 ignore next -- right rows are add/context/empty only (deletions always land on the left). */
             rightGutter.push(
               <div key={i} className={clsx(css.gutterRow, right.type === 'add' ? css.rowAdd : right.type === 'delete' ? css.rowDelete : right.type === 'empty' ? css.rowEmpty : css.rowContext)} style={right.type === 'empty' ? { height: DIFF_LINE_HEIGHT, backgroundPosition: `5px ${-rowTop}px` } : undefined}>
-                <ChangeBar type={right.type} rowTop={rowTop} />
-                <LineNumberCell lineNo={right.lineNo} width={lineNumberWidth} tone={right.type === 'add' || right.type === 'delete' ? 'changed' : 'context'} />
+                {showLineNos && <ChangeBar type={right.type} rowTop={rowTop} />}
+                {showLineNos && (
+                  <LineNumberCell lineNo={right.lineNo} width={lineNumberWidth} tone={right.type === 'add' || right.type === 'delete' ? 'changed' : 'context'} />
+                )}
               </div>,
             )
             /* v8 ignore next -- right rows are add/context/empty only (deletions always land on the left). */
             rightContent.push(
-              <div key={i} className={clsx(css.contentRow, right.type === 'empty' ? css.rowEmpty : right.type === 'add' ? css.rowAdd : right.type === 'delete' ? css.rowDelete : css.rowContext)} style={right.type === 'empty' ? { backgroundPosition: `5px ${-rowTop}px` } : undefined}>
-                <LineContent line={right} tokens={right.lineNo !== undefined ? tokens.after?.[right.lineNo - 1] : undefined} />
+              <div key={i} className={clsx(css.contentRow, !showLineNos && css.contentRowNoGutter, right.type === 'empty' ? css.rowEmpty : right.type === 'add' ? css.rowAdd : right.type === 'delete' ? css.rowDelete : css.rowContext)} style={right.type === 'empty' ? { backgroundPosition: `5px ${-rowTop}px` } : undefined}>
+                <LineContent line={right} tokens={right.lineNo !== undefined ? tokens.after?.[right.lineNo - newBase] : undefined} />
               </div>,
             )
           }
@@ -1126,10 +1212,16 @@ function SplitDiffBody({ pairs, tokens, maxLines, labels, className }: {
  * Unified body: one column per row — gutter with the old and new line numbers
  * (a changed line shows the number of the side it belongs to), then the
  * content. Collapsed separators render their buttons over both number cells.
+ * Without file anchors the whole gutter is absent — no line numbers AND no
+ * change bars; the tinted row background alone marks changes, and the
+ * separator's controls move onto the content row.
  */
-function UnifiedDiffBody({ lines, tokens, maxLines, labels, className }: {
+function UnifiedDiffBody({ lines, tokens, oldStart, newStart, showLineNos, maxLines, labels, className }: {
   lines: UnifiedLine[]
   tokens: TokenPair
+  oldStart?: number | undefined
+  newStart?: number | undefined
+  showLineNos: boolean
   maxLines: number | undefined
   labels: DiffViewerLabels
   className?: string | undefined
@@ -1147,7 +1239,11 @@ function UnifiedDiffBody({ lines, tokens, maxLines, labels, className }: {
   const lineNumberWidth = useMemo(() => lineNumberColumnWidth(
     lines.reduce((max, line) => Math.max(max, line.oldLineNo ?? 0, line.newLineNo ?? 0), 0),
   ), [lines])
-  const gutterWidth = lineNumberWidth * 2 + 4
+  const oldBase = oldStart ?? 1
+  const newBase = newStart ?? 1
+  // Without line numbers the gutter (row) disappears entirely — no 4px bar
+  // column hugging the text. The tinted row background alone marks changes.
+  const gutterWidth = showLineNos ? lineNumberWidth * 2 + 4 : 0
 
   return (
     <div className={clsx(css.body, className)}>
@@ -1163,15 +1259,34 @@ function UnifiedDiffBody({ lines, tokens, maxLines, labels, className }: {
 
             if (isCollapsed(row)) {
               const directions = separatorDirections(row)
-              gutters.push(
-                <div key={i} className={clsx(css.separatorSurface, css.separatorRelative)} style={{ height: DIFF_LINE_HEIGHT }}>
-                  <CollapsedExpandButton directions={directions} onExpand={direction => handleExpand(row.id, direction)} width={lineNumberWidth * 2} labels={labels} />
-                  <div className={css.separatorLabelOverlay} style={{ left: lineNumberWidth * 2 }}>
-                    <CollapsedLabel count={row.count} labels={labels} onExpand={direction => handleExpand(row.id, direction)} />
-                  </div>
-                </div>,
+              const buttons = (
+                <CollapsedExpandButton
+                  directions={directions}
+                  onExpand={direction => handleExpand(row.id, direction)}
+                  {...(showLineNos ? { width: lineNumberWidth * 2 } : {})}
+                  labels={labels}
+                />
               )
-              contents.push(<div key={i} className={css.separatorSurface} style={{ height: DIFF_LINE_HEIGHT }} />)
+              const label = <CollapsedLabel count={row.count} labels={labels} onExpand={direction => handleExpand(row.id, direction)} />
+              if (showLineNos) {
+                gutters.push(
+                  <div key={i} className={clsx(css.separatorSurface, css.separatorRelative)} style={{ height: DIFF_LINE_HEIGHT }}>
+                    {buttons}
+                    <div className={css.separatorLabelOverlay} style={{ left: lineNumberWidth * 2 }}>
+                      {label}
+                    </div>
+                  </div>,
+                )
+              } else {
+                gutters.push(<div key={i} className={css.separatorSurface} style={{ height: DIFF_LINE_HEIGHT }} />)
+                contents.push(
+                  <div key={i} className={clsx(css.separatorSurface, css.contentRowNoGutter)} style={{ height: DIFF_LINE_HEIGHT }}>
+                    {buttons}
+                    {label}
+                  </div>,
+                )
+              }
+              if (showLineNos) contents.push(<div key={i} className={css.separatorSurface} style={{ height: DIFF_LINE_HEIGHT }} />)
               continue
             }
 
@@ -1179,20 +1294,21 @@ function UnifiedDiffBody({ lines, tokens, maxLines, labels, className }: {
             // A deleted line reads from the removed side, an added or context
             // line from the added side — the side whose text the row shows.
             const sideTokens = line.type === 'delete' ? tokens.before : tokens.after
+            const sideBase = line.type === 'delete' ? oldBase : newBase
             const lineNo = line.type === 'delete' ? line.oldLineNo : line.newLineNo
             const tone = line.type === 'add' || line.type === 'delete' ? 'changed' : 'context'
             gutters.push(
               <div key={i} className={clsx(css.gutterRow, line.type === 'add' ? css.rowAdd : line.type === 'delete' ? css.rowDelete : css.rowContext)} style={{ height: DIFF_LINE_HEIGHT }}>
-                <ChangeBar type={line.type} rowTop={rowTop} />
-                <LineNumberCell lineNo={line.oldLineNo} width={lineNumberWidth} tone={tone} />
-                <LineNumberCell lineNo={line.newLineNo} width={lineNumberWidth} tone={tone} />
+                {showLineNos && <ChangeBar type={line.type} rowTop={rowTop} />}
+                {showLineNos && <LineNumberCell lineNo={line.oldLineNo} width={lineNumberWidth} tone={tone} />}
+                {showLineNos && <LineNumberCell lineNo={line.newLineNo} width={lineNumberWidth} tone={tone} />}
               </div>,
             )
             /* v8 ignore next -- every unified line carries its side's number
                (delete → old, add/context → new), so the fallback never fires. */
             contents.push(
-              <div key={i} className={clsx(css.contentRow, line.type === 'add' ? css.rowAdd : line.type === 'delete' ? css.rowDelete : css.rowContext)}>
-                <LineContent line={line} tokens={lineNo !== undefined ? sideTokens?.[lineNo - 1] : undefined} />
+              <div key={i} className={clsx(css.contentRow, !showLineNos && css.contentRowNoGutter, line.type === 'add' ? css.rowAdd : line.type === 'delete' ? css.rowDelete : css.rowContext)}>
+                <LineContent line={line} tokens={lineNo !== undefined ? sideTokens?.[lineNo - sideBase] : undefined} />
               </div>,
             )
           }
@@ -1309,6 +1425,10 @@ export function DiffViewer({ diffs, viewMode = 'unified', lang, maxLines, classN
           <DiffBody
             before={hunk.oldText ?? ''}
             after={hunk.newText}
+            wholeFile={hunk.oldText === null}
+            offsets={hunk.oldStart !== undefined || hunk.newStart !== undefined
+              ? { oldStart: hunk.oldStart, newStart: hunk.newStart }
+              : undefined}
             lang={lang ?? langFromPath(hunk.path)}
             viewMode={responsiveMode}
             maxLines={maxLines}

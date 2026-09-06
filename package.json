@@ -1,7 +1,7 @@
 {
   "name": "@dsh-external/dsh-diff-viewer",
-  "description": "DSH diff-viewer plugin: PiUI-style visual diff surface (split/unified, change bars, line numbers, word-level marks, collapsed context, windowed rendering) replacing the stock DiffBlock for write/edit tool calls. Registers into the ui-tool diff-card chain slots.",
-  "version": "0.1.1",
+  "description": "DSH diff-viewer plugin: PiUI-style visual diff surface (split/unified, change bars, real file line numbers, word-level marks, collapsed context, windowed rendering) replacing the stock DiffBlock for write/edit tool calls. Registers into the ui-tool keyed toolview slots.",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "main": "lib/index.js",
@@ -33,9 +33,7 @@
       "patch": "./cordis.patch.yml"
     },
     "client": {
-      "inject": [
-        "@deepseek-ai/dsh-client-runtime"
-      ],
+      "inject": [],
       "platform": "web"
     }
   },
@@ -48,22 +46,23 @@
   "peerDependencies": {
     "@deepseek-ai/dsh-client-ui-primitives": "*",
     "@deepseek-ai/dsh-client-ui-slots": "*",
-    "cordis": "^4.0.0-rc.7",
+    "@deepseek-ai/cordis": "^4.0.0-rc.7",
     "react": "^18.2.0"
   },
   "devDependencies": {
+    "@deepseek-ai/cordis": "link:../dsh2026/deepseek-harness/vendor/cordis",
     "@deepseek-ai/dsh-client-locale": "link:../dsh2026/deepseek-harness/packages/client/locale",
-    "@deepseek-ai/dsh-client-runtime": "link:../dsh2026/deepseek-harness/packages/client/runtime",
     "@deepseek-ai/dsh-client-test-runtime": "link:../dsh2026/deepseek-harness/packages/test-support/client-runtime",
+    "@deepseek-ai/dsh-client-ui-chat": "link:../dsh2026/deepseek-harness/packages/client/ui-chat",
     "@deepseek-ai/dsh-client-ui-primitives": "link:../dsh2026/deepseek-harness/packages/client/ui-primitives",
+    "@deepseek-ai/dsh-client-ui-renderer": "link:../dsh2026/deepseek-harness/packages/client/ui-renderer",
     "@deepseek-ai/dsh-client-ui-slots": "link:../dsh2026/deepseek-harness/packages/client/ui-slots",
-    "@deepseek-ai/dsh-client-ui-layout": "link:../dsh2026/deepseek-harness/packages/client/ui-layout",
     "@deepseek-ai/dsh-client-ui-tool": "link:../dsh2026/deepseek-harness/packages/client/ui-tool",
     "@deepseek-ai/dsh-client-ui-conversation": "link:../dsh2026/deepseek-harness/packages/client/ui-conversation",
+    "@deepseek-ai/dsh-client-ui-layout": "link:../dsh2026/deepseek-harness/packages/client/ui-layout",
     "@types/node": "^22.0.0",
     "@types/react": "~18.3.1",
     "@types/react-dom": "^18.3.1",
-    "cordis": "link:../dsh2026/deepseek-harness/vendor/cordis",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "tsdown": "^0.22.2",
@@ -77,5 +76,3 @@
   },
   "license": "BSD-3-Clause"
 }
-
-

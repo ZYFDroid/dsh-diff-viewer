@@ -4,22 +4,26 @@
 
 DSH Web GUI 的 PiUI 风格 diff 查看器插件：替换 write/edit 工具调用的 diff 渲染（原 DiffBlock）。
 
-- **unified 单栏默认**：同一 gutter 并排显示旧/新行号，无左右错位；split 双栏可选（`viewMode`）
+- **统一/并排行号**：unified 单栏默认（同一 gutter 并排显示旧/新行号），split 双栏可选（`viewMode`）
+- **真实文件行号**：已完成的 edit/write 顶层调用，行号 gutter 显示**文件中的真实行号**（GitHub 式 `@@` 位置），不是片段内 1..N 重新计数；新建文件（create）显示 1..N
 - **变更条**：新增实心绿条、删除条纹红条；行背景色带统一延伸到最宽行
 - **词级高亮**：行内改动叠加绿/红标记，shiki 语法着色（`highlightLines`）
 - **上下文折叠**：长段未变更行折叠为"`N 行未变更`"，向上/向下/全部展开
 - **窗口化渲染**：固定行高窗口化，大 diff 不挂载全部行；sticky 横向滚动条（hover 显现）
 - **复制 + `└ +A -R · N file(s)` 页脚**
 - **edit 结果默认展开**：settled 的 edit 结果卡展开即见替换 diff（write 保持默认收起）
-- **PTC/Code 嵌套支持**：Code Dispatch 内的 write/edit 子卡片同样接管——嵌套子调用没有 wire diff view，插件按工具自身的 `presentCall` 语义从参数推导调用时 diff（edit 的 old_string→new_string、write 的整文件新增），错误子调用保持通用错误路径
+- **PTC/Code 嵌套支持**：Code Dispatch 内的 write/edit 子卡片同样接管——嵌套子调用核心短路 meta（`exec.parent` 时不执行 `presentationMeta`），插件按工具参数推导调用时 diff（edit 的 old_string→new_string、write 的整文件新增），错误子调用保持通用错误路径
 
 ## 机制
 
 插件通过 **keyed 接管**替换 write/edit 的工具行渲染：ui-tool 的 `tool.call.toolview` 槽是开放 key 域，同一 key 以**更低 priority 阴影**（最低优先渲染）。插件注册 `edit`/`write` 键（priority -1），接管后的行**完全复刻官方 FileMutationRow**（复用官方 ToolRow 样式 + DisclosureRow/StateDot 等平台组件），只把展开后的 diff 卡换成 PiUI 风格 DiffViewer——**不改任何核心，纯插件**，卸载即还原官方行。
 
+- **真实行号机制**：核心的 `FileDiff` 契约只有 `{ path, oldText, newText }`，工具执行时 hunk 的真实起始行（`structuredPatch` 的 `oldStart`/`newStart`）被核心丢弃。插件的 host 半（`lib/index.js`）监听 `agent/created`，在每个 agent 自己的 layer 上 re-register 一份 `edit`/`write` **shadow 定义**（官方 schedule 插件同款模式）：schema/render/execute 全部**原样复用原定义**（`...original`），只替换 `output.presentationMeta` 为带行号的版本——用与核心相同的 `structuredPatch`（context 3）复算 hunk，把 `oldStart`/`newStart` 镌进 meta 的 diffs。零额外 diff 计算（同一次 `structuredPatch` 多带两个字段），文件读写语义不变（execute 引用原闭包）。
+- **行号透传**：`oldStart`/`newStart` 随 `tool/result` 的 meta 落盘，穿过核心 `diffsFromMeta` 的窄化（只校验三个固定字段、额外字段原样保留）与插件自身的 `narrowDiffs`（畸形值拒绝），到达 DiffViewer 渲染真实行号。
+- **无锚点安全降级**：老会话日志（meta 无行号）与 PTC 嵌套子调用（核心在 `exec.parent` 存在时短路 `presentationMeta`，meta 恒缺失）没有锚点 → 行号 gutter 隐藏（回到无行号的 diff 块），绝不显示编造的假行号。create（`oldText: null`）的 newText 即整个新文件，1..N 真实 → 显示。
 - **不限制高度**：展开的 diff 直接撑开显示完整内容（不套滚动容器），窗口化渲染保证超大 diff 依然高效
-- **diff 数据**：从工具调用的 `callView`/`resultView` 的 `card:'diff'` 意图提取（running 用调用时 diff，settled 用应用后的 hunks）；执行错误（无 diff 卡）走官方行的错误摘要 + IN/OUT 卡
-- **嵌套兜底**：Code Dispatch 子调用（PTC 模式）的 `callView`/`resultView` 恒为 null（分发桥不落 presentation meta），插件回退到参数的调用时 diff——与官方行渲染同一调用的 running 态一致
+- **diff 数据（dsh 0.1.2+ 契约）**：Host 的 `presentCall`/`presentResult` 视图不再进入 Client，diff 卡完全从**原始事件字段**派生——running 用参数推导的调用时 diff（edit 的 old_string→new_string、write 的整文件内容），settled 用 `tool/result` 落盘的 `meta.diffs`（应用后的 hunks，即行号所在的通道）；执行错误走官方行的错误摘要 + IN/OUT 卡
+- **嵌套兜底**：Code Dispatch 子调用（PTC 模式）的 meta 恒缺失（同上），插件回退到参数的调用时 diff——与官方行渲染同一调用的 running 态一致
 
 ## 效果
 

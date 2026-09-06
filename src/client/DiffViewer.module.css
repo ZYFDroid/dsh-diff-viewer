@@ -192,6 +192,13 @@
   padding-right: 12px;
 }
 
+/* Without line numbers the gutter is gone, so the content column starts at
+   the block's edge; this inset keeps the code off the frame, matching the
+   file header's and footer's 14px padding. */
+.contentRowNoGutter {
+  padding-left: 14px;
+}
+
 /* The line-number cell: right-aligned, padded, non-selectable. Width is set
    inline from the widest line number so the gutter columns align. The width
    must be box-sizing: border-box (the theme sets no global box-sizing, so the

@@ -113,6 +113,28 @@ describe('computePairedLines', () => {
     expect(rows[0]!.left.wordDiffSegments).toBeUndefined()
     expect(rows[0]!.right.wordDiffSegments).toBeUndefined()
   })
+
+  it('numbers rows from the hunk’s file-anchored start lines', () => {
+    // A 7-line applied hunk that starts at file line 39 (the core's
+    // structuredPatch hunk.oldStart/newStart shipped through the plugin's
+    // enhanced meta): context rows carry their real file positions.
+    const rows = computePairedLines(
+      'line 39\nline 40\nline 41\nline 42\nline 43\nline 44\nline 45',
+      'line 39\nline 40\nline 41\nLINE 42\nline 43\nline 44\nline 45',
+      { oldStart: 39, newStart: 39 },
+    )
+    expect(rows[0]!.left.lineNo).toBe(39)
+    expect(rows[0]!.right.lineNo).toBe(39)
+    expect(rows[3]!.left).toEqual({ type: 'delete', content: 'line 42', lineNo: 42 })
+    expect(rows[3]!.right).toEqual({ type: 'add', content: 'LINE 42', lineNo: 42 })
+    expect(rows[6]!.left.lineNo).toBe(45)
+  })
+
+  it('keeps 1-based numbering when the hunk has no anchors', () => {
+    const rows = computePairedLines('a\nb', 'a\nX')
+    expect(rows[0]!.left.lineNo).toBe(1)
+    expect(rows[1]!.right.lineNo).toBe(2)
+  })
 })
 
 describe('computeUnifiedLines', () => {
@@ -158,6 +180,20 @@ describe('computeUnifiedLines', () => {
     const paired = computeUnifiedLines('x', '\ny')
     expect(paired[1]).toMatchObject({ type: 'add', content: '', newLineNo: 1 })
     expect(computeUnifiedLines('\nx', 'x')[0]).toMatchObject({ type: 'delete', content: '', oldLineNo: 1 })
+  })
+
+  it('numbers unified rows from the hunk’s file-anchored start lines too', () => {
+    const rows = computeUnifiedLines(
+      'line 39\nline 40\nline 41\nline 42\nline 43\nline 44\nline 45',
+      'line 39\nline 40\nline 41\nLINE 42\nline 43\nline 44\nline 45',
+      { oldStart: 39, newStart: 39 },
+    )
+    expect(rows[3]).toMatchObject({ type: 'delete', content: 'line 42', oldLineNo: 42 })
+    expect(rows[4]).toMatchObject({ type: 'add', content: 'LINE 42', newLineNo: 42 })
+    // Context rows carry both sides' real positions.
+    const ctx = rows[2]!
+    expect(ctx.oldLineNo).toBe(41)
+    expect(ctx.newLineNo).toBe(41)
   })
 })
 
@@ -414,12 +450,28 @@ describe('DiffViewer rendering', () => {
     expect(view.getByRole('button', { name: '复制' })).toBeTruthy()
   })
 
-  it('renders split rows with change bars and line numbers on both sides', () => {
-    const { container } = render(<DiffViewer diffs={[twoLineHunk]} viewMode="split" />)
-    // The delete side shows the old line number 1; the add side shows new 1.
+  it('renders split rows with change bars and line numbers when anchored', () => {
+    // An anchored hunk carries real file positions, so the split gutter shows
+    // the change bars AND the line numbers.
+    const { container } = render(<DiffViewer diffs={[{
+      path: 'notes/demo.txt',
+      oldText: 'hello',
+      newText: 'hello fixture',
+      oldStart: 3, newStart: 3,
+    }]} viewMode="split" />)
     expect(container.querySelectorAll('[class*="_barAdd_"]')).toHaveLength(1)
     expect(container.querySelectorAll('[class*="_barDelete_"]')).toHaveLength(1)
     expect(container.textContent).toContain('hello')
+  })
+
+  it('renders no change bars or line numbers for an unanchored fragment', () => {
+    // A fragment has no file position: no line numbers AND no change bar
+    // hugging the text — the tinted background alone marks the change.
+    const { container } = render(<DiffViewer diffs={[twoLineHunk]} viewMode="split" />)
+    expect(container.querySelectorAll('[class*="_barAdd_"]')).toHaveLength(0)
+    expect(container.querySelectorAll('[class*="_barDelete_"]')).toHaveLength(0)
+    expect(container.querySelectorAll('[class*="_lineNumber_"]')).toHaveLength(0)
+    expect(container.textContent).toContain('hello fixture')
   })
 
   it('auto-downgrades a pure addition to unified (one gutter, no empty buffer)', () => {
@@ -563,6 +615,41 @@ describe('DiffViewer rendering', () => {
   it('shows the empty state when both sides are empty', () => {
     const view = render(<DiffViewer diffs={[hunk('blank.ts', '', '')]} />)
     expect(view.getByText('无变更')).toBeTruthy()
+  })
+
+  it('renders real file line numbers when the hunk carries start anchors', () => {
+    // An applied edit hunk starting at file line 39 (the plugin's host half
+    // ships oldStart/newStart through the meta): the gutter shows the file's
+    // own numbering, not a re-count from 1.
+    const view = render(<DiffViewer diffs={[{
+      path: 'app.ts',
+      oldText: 'line 39\nline 40\nline 41\nline 42\nline 43\nline 44\nline 45',
+      newText: 'line 39\nline 40\nline 41\nLINE 42\nline 43\nline 44\nline 45',
+      oldStart: 39, newStart: 39,
+    }]} />)
+    // The gutter is present and shows file numbers 39..45, not a fresh 1..7.
+    const cells = [...view.container.querySelectorAll('[class*="_lineNumber_"]')].map(el => el.textContent)
+    expect(cells.length).toBeGreaterThan(0)
+    expect(cells).toContain('42')
+    expect(cells).not.toContain('4')
+    expect(cells).toContain('39')
+  })
+
+  it('hides the line-number gutter for an unanchored replacement fragment', () => {
+    // A call-time edit fragment (old_string/new_string, no file anchors):
+    // numbering it from 1 would fabricate positions, so the gutter is absent
+    // — the honest degradation back to a plain diff block.
+    const view = render(<DiffViewer diffs={[hunk('app.ts', 'line 42', 'LINE 42')]} />)
+    expect(view.container.querySelectorAll('[class*="_lineNumber_"]')).toHaveLength(0)
+  })
+
+  it('shows the new side from 1 for a whole-file create', () => {
+    // A create (`oldText: null`) IS the whole new file, so 1..N is truthful.
+    const view = render(<DiffViewer diffs={[hunk('new.txt', null, 'first\nsecond\nthird\n')]} />)
+    const cells = [...view.container.querySelectorAll('[class*="_lineNumber_"]')].map(el => el.textContent)
+    expect(cells.length).toBeGreaterThan(0)
+    expect(cells).toContain('1')
+    expect(cells).toContain('3')
   })
 
   it('copies the diff and flips the control label on success', async () => {
@@ -713,21 +800,22 @@ describe('DiffViewer rendering', () => {
 
 describe('diffCardModel', () => {
   // Frozen call slices in the two lifecycle forms, shaped like the
-  // conversation projection hands them to the toolview owner.
-  const running = (name: string, argsRaw: string, callView: unknown = null) => ({
-    callId: 'c1', name, argsRaw, turn: 1, step: 1, time: 0, callView, subCalls: [],
+  // conversation projection hands them to the toolview owner (dsh 0.1.2+:
+  // no wire call/result views; a settled block carries the durable `meta`).
+  const running = (name: string, argsRaw: string) => ({
+    callId: 'c1', name, argsRaw, turn: 1, step: 1, time: 0, subCalls: [],
   })
-  const settled = (name: string, argsRaw: string, opts: { isError?: boolean; resultView?: unknown } = {}) => ({
+  const settled = (name: string, argsRaw: string, opts: { isError?: boolean; meta?: unknown } = {}) => ({
     kind: 'tool-result', seq: 1, time: 0, callId: 'c1',
     call: { name, argsRaw }, callTime: 0, content: [],
-    isError: opts.isError ?? false, callView: null,
-    resultView: opts.resultView ?? null, subCalls: [],
+    isError: opts.isError ?? false,
+    ...(opts.meta !== undefined ? { meta: opts.meta } : {}), subCalls: [],
   })
 
-  it('keeps the wire call view for a running top-level call', () => {
-    const model = diffCardModel(running('edit', '{}', {
-      card: 'diff', diffs: [{ path: 'a.ts', oldText: 'x', newText: 'y' }],
-    }) as Parameters<typeof diffCardModel>[0])
+  it('derives the args diff for a running top-level call', () => {
+    const model = diffCardModel(running('edit', JSON.stringify({
+      file_path: 'a.ts', old_string: 'x', new_string: 'y',
+    })) as Parameters<typeof diffCardModel>[0])
     expect(model).toEqual({ card: { diffs: [{ path: 'a.ts', oldText: 'x', newText: 'y' }] } })
   })
 
@@ -745,11 +833,48 @@ describe('diffCardModel', () => {
     expect(model).toEqual({ card: { diffs: [{ path: 'b.ts', oldText: null, newText: 'z' }] } })
   })
 
-  it('keeps the applied result hunks for a settled top-level call', () => {
+  it('keeps the applied meta hunks for a settled top-level call', () => {
     const model = diffCardModel(settled('edit', '{}', {
-      resultView: { card: 'diff', diffs: [{ path: 'a.ts', oldText: 'old', newText: 'new' }] },
+      meta: { diffs: [{ path: 'a.ts', oldText: 'old', newText: 'new' }] },
     }) as Parameters<typeof diffCardModel>[0])
     expect(model).toEqual({ card: { diffs: [{ path: 'a.ts', oldText: 'old', newText: 'new' }] } })
+  })
+
+  it('prefers the applied meta hunks over the args diff for a settled edit', () => {
+    // The applied hunks carry file context the args replacement lacks, so
+    // meta wins whenever it narrows.
+    const model = diffCardModel(settled('edit', JSON.stringify({
+      file_path: 'a.ts', old_string: 'x', new_string: 'y',
+    }), { meta: { diffs: [{ path: 'a.ts', oldText: 'old', newText: 'new' }] } }) as Parameters<typeof diffCardModel>[0])
+    expect(model).toEqual({ card: { diffs: [{ path: 'a.ts', oldText: 'old', newText: 'new' }] } })
+  })
+
+  it('falls back to the args diff when meta is absent but the call succeeded', () => {
+    // A write whose core meta is empty (a create) settles through the args
+    // whole-file diff, matching the stock row's create presentation.
+    const model = diffCardModel(settled('write', JSON.stringify({
+      file_path: 'b.ts', content: 'z',
+    })) as Parameters<typeof diffCardModel>[0])
+    expect(model).toEqual({ card: { diffs: [{ path: 'b.ts', oldText: null, newText: 'z' }] } })
+  })
+
+  it('preserves the file-anchored start lines the host half stamps onto hunks', () => {
+    // The plugin's host half re-projects applied-hunk meta with oldStart/
+    // newStart; the client narrowing must keep them for the gutter.
+    const diffs = [{ path: 'a.ts', oldText: 'a\nb\nc', newText: 'a\nB\nc', oldStart: 7, newStart: 7 }]
+    const model = diffCardModel(settled('edit', '{}', {
+      meta: { diffs },
+    }) as Parameters<typeof diffCardModel>[0])
+    expect(model).toEqual({ card: { diffs } })
+  })
+
+  it('rejects malformed anchors instead of rendering from them', () => {
+    for (const badAnchor of [{ oldStart: 0 }, { oldStart: -1 }, { newStart: 1.5 }, { newStart: '7' }]) {
+      const model = diffCardModel(settled('edit', '{}', {
+        meta: { diffs: [{ path: 'a.ts', oldText: 'x', newText: 'y', ...badAnchor }] },
+      }) as Parameters<typeof diffCardModel>[0])
+      expect(model).toBeNull()
+    }
   })
 
   it('falls back to the call-time diff for a settled code-dispatch child', () => {
@@ -785,11 +910,11 @@ describe('diffCardModel', () => {
 })
 
 describe('defaultOpenFor', () => {
-  const running = (name: string) => ({ callId: 'c1', name, argsRaw: '{}', turn: 1, step: 1, time: 0, callView: null, subCalls: [] })
+  const running = (name: string) => ({ callId: 'c1', name, argsRaw: '{}', turn: 1, step: 1, time: 0, subCalls: [] })
   const settled = (name: string, isError = false) => ({
     kind: 'tool-result', seq: 1, time: 0, callId: 'c1',
     call: { name, argsRaw: '{}' }, callTime: 0, content: [],
-    isError, callView: null, resultView: null, subCalls: [],
+    isError, subCalls: [],
   })
 
   it('opens a settled successful edit result card by default', () => {
@@ -809,12 +934,12 @@ describe('MutationRow default-open lifecycle', () => {
     const runningBlock = {
       callId: 'c1', name: 'edit',
       argsRaw: JSON.stringify({ file_path: 'a.ts', old_string: 'x', new_string: 'y' }),
-      turn: 1, step: 1, time: 0, callView: null, subCalls: [],
+      turn: 1, step: 1, time: 0, subCalls: [],
     }
     const settledBlock = {
       kind: 'tool-result', seq: 1, time: 0, callId: 'c1',
       call: { name: 'edit', argsRaw: runningBlock.argsRaw }, callTime: 0, content: [],
-      isError: false, callView: null, resultView: null, subCalls: [],
+      isError: false, subCalls: [],
     }
     const props = (block: unknown) => ({
       callId: 'c1', toolName: 'edit', block,
@@ -833,7 +958,7 @@ describe('MutationRow default-open lifecycle', () => {
     const block = {
       kind: 'tool-result', seq: 1, time: 0, callId: 'c1',
       call: { name: 'write', argsRaw: JSON.stringify({ file_path: 'b.ts', content: 'z' }) },
-      callTime: 0, content: [], isError: false, callView: null, resultView: null, subCalls: [],
+      callTime: 0, content: [], isError: false, subCalls: [],
     }
     const view = render(<MutationRow {...({ callId: 'c1', toolName: 'write', block, openFile: () => {}, inspect: undefined } as Parameters<typeof MutationRow>[0])} />)
     expect(view.container.querySelector('[data-diff-viewer]')).toBeNull()

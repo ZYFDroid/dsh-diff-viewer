@@ -31,8 +31,12 @@ export default defineConfig({
       // The src/ prefix must precede the bare package name (string finds
       // prefix-match) so tests can import fork internals like clipboard.ts.
       { find: '@deepseek-ai/dsh-client-ui-primitives/src/', replacement: `${fork}/ui-primitives/src/` },
-      { find: '@deepseek-ai/dsh-client-runtime/client', replacement: `${fork}/runtime/src/client/index.ts` },
-      { find: '@deepseek-ai/dsh-client-runtime', replacement: `${fork}/runtime/src/index.ts` },
+      // dsh 0.1.2+: the runtime package is gone; block types live in ui-chat,
+      // the slots service in ui-renderer. Tests must resolve those src roots
+      // (and the cordis vendor package, whose bare specifier also moved to
+      // @deepseek-ai/cordis).
+      { find: '@deepseek-ai/dsh-client-ui-chat/client', replacement: `${fork}/ui-chat/src/client/index.ts` },
+      { find: '@deepseek-ai/dsh-client-ui-renderer/client', replacement: `${fork}/ui-renderer/src/client/index.ts` },
       { find: '@deepseek-ai/dsh-client-ui-slots', replacement: `${fork}/ui-slots/src/index.ts` },
       { find: '@deepseek-ai/dsh-client-ui-primitives', replacement: `${fork}/ui-primitives/src/index.ts` },
       { find: '@deepseek-ai/dsh-client-ui-tool/client', replacement: `${fork}/ui-tool/src/client/index.ts` },

@@ -21,17 +21,22 @@ const require = createRequire(import.meta.url)
 const PROJECT_ROOT = dirname(fileURLToPath(import.meta.url))
 const PLUGIN_ID = '@dsh-external/dsh-diff-viewer'
 
-/** Module specifiers the dsh web shell shares into its frozen module table. */
+/** Module specifiers the dsh web shell shares into its frozen module table
+ *  (packages/client/web/src/platform.ts, the upstream single source of truth).
+ *  dsh 0.1.2+: the table keys are the `@deepseek-ai/` cordis package and the
+ *  store/slots/primitives packages; the old `cordis` bare specifier,
+ *  `dsh-client-web-react`, and `dsh-client-schema-form` are gone. */
 const PLATFORM_MODULES = [
-  'react', 'react/jsx-runtime', 'react-dom', 'react-dom/client', 'cordis',
+  'react', 'react/jsx-runtime', 'react-dom', 'react-dom/client', '@deepseek-ai/cordis',
+  '@deepseek-ai/dsh-client-store',
   '@deepseek-ai/dsh-client-ui-slots',
-  '@deepseek-ai/dsh-client-web-react',
   '@deepseek-ai/dsh-client-ui-primitives',
-  '@deepseek-ai/dsh-client-schema-form',
 ] as const
 
-/** Externals resolved from the loader module table. */
-const CLIENT_EXTERNALS: readonly string[] = [...PLATFORM_MODULES, '@deepseek-ai/dsh-client-runtime/client']
+/** Externals resolved from the loader module table. The old
+ *  `@deepseek-ai/dsh-client-runtime/client` external is gone with the
+ *  runtime package itself (dsh 0.1.2+). */
+const CLIENT_EXTERNALS: readonly string[] = [...PLATFORM_MODULES]
 
 const CSS_VIRTUAL_PREFIX = '\0dsh-css:'
 const CSS_VIRTUAL_SUFFIX = '.mjs'
