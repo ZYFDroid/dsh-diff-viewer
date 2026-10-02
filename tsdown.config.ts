@@ -23,14 +23,16 @@ const PLUGIN_ID = '@dsh-external/dsh-diff-viewer'
 
 /** Module specifiers the dsh web shell shares into its frozen module table
  *  (packages/client/web/src/platform.ts, the upstream single source of truth).
- *  dsh 0.1.2+: the table keys are the `@deepseek-ai/` cordis package and the
- *  store/slots/primitives packages; the old `cordis` bare specifier,
- *  `dsh-client-web-react`, and `dsh-client-schema-form` are gone. */
+ *  dsh 0.2.0-rc.2: the table keys are the `@deepseek-ai/` cordis package and
+ *  the store/slots/primitives/dockkit packages; the old `cordis` bare
+ *  specifier, `dsh-client-web-react`, and `dsh-client-schema-form` are gone
+ *  (dockkit joined the seeded set with the Sidebar assembly). */
 const PLATFORM_MODULES = [
   'react', 'react/jsx-runtime', 'react-dom', 'react-dom/client', '@deepseek-ai/cordis',
   '@deepseek-ai/dsh-client-store',
   '@deepseek-ai/dsh-client-ui-slots',
   '@deepseek-ai/dsh-client-ui-primitives',
+  '@deepseek-ai/dsh-client-ui-dockkit',
 ] as const
 
 /** Externals resolved from the loader module table. The old

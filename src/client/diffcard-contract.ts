@@ -1,55 +1,29 @@
-/** Local toolview contract for the diff-viewer plugin: the owner currency the
- *  stock ui-tool rows supply at `tool.call.toolview` and the pure diff-card
- *  derivation, declared locally so this plugin never imports the stock ui-tool
- *  contract (one-way dependency). The `declare module` merge restores the slot
- *  key this plugin registers into — the stock ui-tool bundle declares the same
- *  row with the same shape, and interface merging accepts the duplicate
- *  identical declaration.
+/** Local diff-card derivation for the diff-viewer plugin: the pure projection
+ *  from a dispatched or settled Tool block to the hunks the DiffViewer draws.
  *
- *  dsh 0.1.2+ contract: the `@deepseek-ai/dsh-client-runtime` package (which
- *  used to re-export the conversation block types) was removed upstream, and
- *  the Host `presentCall`/`presentResult` wire views no longer enter the
- *  Client. The runtime block types live in `dsh-client-ui-chat/client`, and a
- *  settled card derives from the durable `tool/result` `meta` payload (the
- *  tool's `output.presentationMeta` projection, persisted verbatim). */
-import type { ToolCallBlock } from '@deepseek-ai/dsh-client-ui-chat/client'
+ *  dsh 0.2.0-rc.2 tool contract: the keyed `tool.call.toolview` owner hands the
+ *  component one explicit phase — `preparing` (a named call whose arguments have
+ *  not arrived), `start` (dispatched arguments, no result), or `result` (the
+ *  settled `ToolResultNode`). A preparing block carries no arguments, a started
+ *  block carries them on `argsRaw` directly, and a settled block carries both
+ *  the backfilled call head and the durable `meta` payload (the tool's
+ *  `output.presentationMeta` projection, persisted verbatim).
+ */
+import type {
+  PreparingToolCall, StartedToolCall, ToolCallBlock, ToolResultNode,
+} from '@deepseek-ai/dsh-client-ui-chat/client'
 import type { DiffHunk } from './DiffViewer.tsx'
-
-/** What the stock ui-tool rows pass to the `tool.call.toolview` keyed slots. */
-export interface ToolCallOwnerProps {
-  /** Tool call identity, stable across running and settled forms. */
-  callId: string
-  /** Wire Tool name and keyed dispatch value. */
-  toolName: string
-  /** Frozen running call or settled result node. */
-  block: ToolCallBlock
-  /** Session workspace root for relative summaries. */
-  cwd?: string | undefined
-  /** Host account home; POSIX home-rooted summaries display as `~`. */
-  home?: string | undefined
-  /** Open a Tool argument path through the Host. */
-  openFile: (path: string) => void
-  /** Inspect this call in the trajectory view when available. */
-  inspect?: (() => void) | undefined
-}
 
 /** The derived diff-card material the renderer draws. */
 export interface DiffCardModel {
   card: { diffs: DiffHunk[] }
 }
 
-declare module '@deepseek-ai/dsh-client-ui-slots' {
-  interface SlotMap {
-    /** Keyed atomic Tool call view (declared by the stock ui-tool chat tree). */
-    'tool.call.toolview': { kind: 'keyed'; scope: 'session'; owner: ToolCallOwnerProps }
-  }
-}
-
-/** Narrow a wire `card:'diff'` view's `diffs` to well-formed hunks (same
+/** Narrow the durable result meta's `diffs` to well-formed hunks (the same
  *  validation the stock diff-card model applies). Optional `oldStart`/
- *  `newStart` — the file-anchored start lines the plugin's host half stamps
+ *  `newStart` — the file-anchored start lines this plugin's host half stamps
  *  onto applied-hunk metadata — pass through untouched when present (a
- *  non-number or negative value is rejected so rendering never trusts a
+ *  non-integer or non-positive value is rejected so rendering never trusts a
  *  malformed anchor). */
 function narrowDiffs(diffs: unknown): DiffHunk[] | null {
   if (!Array.isArray(diffs) || diffs.length === 0) return null
@@ -114,21 +88,33 @@ export function callTimeDiffs(toolName: string, argsRaw: string): DiffHunk[] | n
   return null
 }
 
-/** The wire Tool name of a frozen call block, when the block still carries it. */
-function callToolName(block: ToolCallBlock): string {
-  return 'kind' in block ? block.call?.name ?? '' : block.name
+/** The wire Tool name of a dispatched (unsettled) call. */
+function runningToolName(block: PreparingToolCall | StartedToolCall): string {
+  return block.name
 }
 
-/** Derive the diff-card props for a tool call, or null when this call is not a
- *  diff card. dsh 0.1.2+ derivation: running calls use the args-derived
- *  call-time diff (there is no wire call view); settled calls use the applied
- *  hunks from the durable result `meta` — the channel the plugin's host half
- *  enhances with real line numbers — and replace the call-time diff. */
+/** The wire Tool name of a settled call, when the call head is still in the
+ *  window (a window cut leaves `call` null and the card has no diff material). */
+function settledToolName(block: ToolResultNode): string {
+  return block.call?.name ?? ''
+}
+
+/** Derive the diff-card props for a Tool block, or null when this call is not a
+ *  diff card. dsh 0.2.0-rc.2 derivation: a preparing call has no arguments yet,
+ *  a dispatched call renders the args-derived call-time diff, and a settled call
+ *  uses the applied hunks from the durable result `meta` — the channel the
+ *  plugin's host half enhances with real line numbers — replacing the call-time
+ *  diff, with the args-derived diff as the fallback for a settled call whose
+ *  meta is absent (a nested code-dispatch sub-call) or unusable.
+ * @param block - the preparing, dispatched, or settled Tool block.
+ * @returns the derived diff-card material, or null for the generic path.
+ */
 export function diffCardModel(block: ToolCallBlock): DiffCardModel | null {
-  const toolName = callToolName(block)
   if (!('kind' in block)) {
-    // Running: no wire call view exists; the args carry the intended change.
-    const fallback = callTimeDiffs(toolName, block.argsRaw)
+    // Preparing: the model named the tool but its arguments have not arrived,
+    // so there is nothing to diff yet.
+    if (block.phase === 'preparing') return null
+    const fallback = callTimeDiffs(runningToolName(block), block.argsRaw)
     return fallback === null ? null : { card: { diffs: fallback } }
   }
   // Settled: the applied meta hunks (with the host half's oldStart/newStart)
@@ -143,6 +129,6 @@ export function diffCardModel(block: ToolCallBlock): DiffCardModel | null {
   // generic error path, exactly like the stock row (which surfaces the
   // model-facing error text).
   if (block.isError) return null
-  const fallback = callTimeDiffs(toolName, block.call?.argsRaw ?? '')
+  const fallback = callTimeDiffs(settledToolName(block), block.call?.argsRaw ?? '')
   return fallback === null ? null : { card: { diffs: fallback } }
 }
