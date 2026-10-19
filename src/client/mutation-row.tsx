@@ -5,15 +5,15 @@
  * the row looks and behaves exactly like the shipped one — only the expanded
  * diff card renders through this plugin's DiffViewer instead of DiffBlock.
  *
- * dsh 0.2.0-rc.2 contract: the keyed `tool.call.toolview` owner supplies one
- * explicit phase (`preparing` | `start` | `result`), the framework's
- * `useDisclosure` hook (bound to the enclosing Turn's reset source, so a row
- * hidden by its Turn comes back collapsed), the business-face hook
- * `useToolCallArgumentsPartial` for the preparing phase, and the localized `t`
- * seat declared by this plugin's registration (`locale: 'conversation'`). The
- * row model derivation (title/summary/path/output/error/state) mirrors the
- * stock tool-call model for the edit/write variants; the CSS classes come from
- * the ui-tool package's exported src subpath (inlined into this bundle).
+ * dsh 0.2.1-rc.2 contract: the keyed `tool.call.toolview` owner supplies one
+ * explicit phase (`preparing` | `start` | `result`), each carrying a lazy `args`
+ * view over the call's top-level fields (incomplete while preparing), plus the
+ * framework's `useDisclosure` hook (bound to the enclosing Turn's reset source,
+ * so a row hidden by its Turn comes back collapsed) and the localized `t` seat
+ * declared by this plugin's registration (`locale: 'conversation'`). The row
+ * model derivation (title/summary/path/output/error/state) mirrors the stock
+ * tool-call model for the edit/write variants; the CSS classes come from the
+ * ui-tool package's exported src subpath (inlined into this bundle).
  *
  * `MutationRow` is the registered component; the two phase components below it
  * take only the inputs they read, so a spec can render the row without
@@ -25,7 +25,7 @@ import {
   DisclosureRow, IconEditOutlineRegular, IconInspectOutlineRegular, StateDot, TextShimmer,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type {
-  OpenFileOptions, StartedToolCall, ToolResultNode, UseDisclosure,
+  OpenFileOptions, PreparingToolCall, StartedToolCall, ToolResultNode, UseDisclosure,
 } from '@deepseek-ai/dsh-client-ui-chat/client'
 import type { PropsLocale, TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
 import type { ToolCallViewProps } from '@deepseek-ai/dsh-client-ui-tool/client'
@@ -33,7 +33,7 @@ import type { ToolCallViewProps } from '@deepseek-ai/dsh-client-ui-tool/client'
 // subpath and inlined — the takeover row renders with the exact stock chrome.
 import rowCss from '@deepseek-ai/dsh-client-ui-tool/src/client/tool/components/ToolRow.module.css'
 import { DiffViewer } from './DiffViewer.tsx'
-import { diffCardModel } from './diffcard-contract.ts'
+import { diffCardModel, type LazyToolArgs } from './diffcard-contract.ts'
 
 /** Row state semantic; colors self-supplied via StateDot. */
 type MutationRowState = 'running' | 'ok' | 'error' | 'stopped'
@@ -62,8 +62,9 @@ export interface StartedRowProps {
 /** Inputs of the preparing row (the seats it actually reads). */
 export interface PreparingRowProps {
   toolName: string
+  /** The preparing block: the tool is named, its arguments are still arriving. */
+  block: PreparingToolCall
   useDisclosure: UseDisclosure
-  useToolCallArgumentsPartial: () => string
   t: Translate
 }
 
@@ -95,6 +96,38 @@ function parseArgs(argsRaw: string): Record<string, unknown> | undefined {
   } catch {
     return undefined
   }
+}
+
+/** Decoded-input granularity: the stock row reports whole kilobytes. */
+const KILOBYTE = 1024
+
+/**
+ * How recently a result must have landed for its card to count as the call the
+ * user is watching. A row that mounts already settled with an older stamp is
+ * history, which the Turn fold and Chat's collapse-timing setting own.
+ */
+const RECENT_RESULT_MS = 60_000
+
+/** The mutation arguments that carry the caller's replacement text. */
+const CONTENT_FIELDS = ['content', 'old_string', 'new_string'] as const
+
+/**
+ * Kilobytes of decoded mutation input at any stage of the call, or null before
+ * a content field has appeared. Mirrors the stock file-mutation row: completed
+ * fields count in full and the one still streaming counts at its current
+ * length, so the figure grows in place while the model writes.
+ * @param args - the block's lazy argument view.
+ * @returns the size in whole kilobytes, or null when the call still carries no content.
+ */
+export function contentKilobytes(args: LazyToolArgs): number | null {
+  const open = CONTENT_FIELDS.find(key => args.has(key) && !args.complete(key))
+  const completed = CONTENT_FIELDS.reduce((total, key) => key !== open && args.complete(key)
+    ? total + (args.stringLength(key, { step: KILOBYTE }) ?? 0) : total, 0)
+  if (open === undefined) {
+    return CONTENT_FIELDS.some(key => args.has(key)) ? Math.ceil(completed / KILOBYTE) : null
+  }
+  const chars = completed + (args.stringLength(open, { step: KILOBYTE, offset: completed }) ?? 0)
+  return Math.ceil(chars / KILOBYTE)
 }
 
 /** Row variant per wire Tool name (the two keys this plugin takes over). */
@@ -175,8 +208,9 @@ function stateStatus(state: MutationRowState, t: Translate): string | null {
  * shows its replacement diff without a click — the issue-driven default
  * (「edit 的结果卡片默认展开」). Writes keep the stock collapsed default (a
  * whole-file diff is bulk), and running or errored rows stay collapsed so the
- * flow never auto-expands transient or error-only cards. Pure for direct
- * testing.
+ * flow never auto-expands transient or error-only cards. The caller also gates
+ * this on the call being one the user is watching (see `RECENT_RESULT_MS`):
+ * replayed history stays collapsed. Pure for direct testing.
  * @param toolName - the wire Tool name.
  * @param block - the frozen dispatched or settled call slice.
  * @returns whether the row's expanded body should start open.
@@ -196,8 +230,8 @@ export function MutationRow(props: MutationRowProps) {
     ? (
       <PreparingMutationRow
         toolName={props.toolName}
+        block={props.block}
         useDisclosure={props.useDisclosure}
-        useToolCallArgumentsPartial={props.useToolCallArgumentsPartial}
         t={props.t}
       />
     )
@@ -215,16 +249,21 @@ export function MutationRow(props: MutationRowProps) {
 }
 
 /**
- * The preparing prefix: stock PreparingToolRow chrome — a named call whose
- * arguments have not arrived, with the streamed argument prefix summarized by
- * size and no disclosure (there is nothing to expand yet).
+ * The preparing prefix: stock chrome for a named call whose arguments are still
+ * arriving. The path appears as soon as its string closes (the model is told to
+ * emit `file_path` first), the decoded input size grows beside it, and there is
+ * no disclosure yet — nothing is dispatched to expand.
  * @param props - preparing-phase row inputs.
  * @returns the non-expandable preparing row.
  */
-export function PreparingMutationRow({ toolName, useDisclosure, useToolCallArgumentsPartial, t }: PreparingRowProps) {
-  const raw = useToolCallArgumentsPartial()
+export function PreparingMutationRow({ toolName, block, useDisclosure, t }: PreparingRowProps) {
   const { expanded, toggle } = useDisclosure()
-  const summary = t('tool.preparing.content', { kilobytes: Math.ceil(raw.length / 1024) })
+  // A half-streamed path would truncate mid-directory and name the wrong file,
+  // so the path shows only once its closing quote arrived (stock rule).
+  const closedPath = block.args.complete('file_path') ? block.args.text('file_path') : undefined
+  const summary = closedPath === undefined || closedPath === '' ? firstLine(block.callId) : firstLine(closedPath)
+  const kilobytes = contentKilobytes(block.args)
+  const size = kilobytes === null ? null : t('tool.preparing.content', { kilobytes })
   return (
     <div className={rowCss.root} data-variant={variantOf(toolName)} data-tool={toolName}
       data-state="preparing" data-diff-viewer-row="">
@@ -243,6 +282,7 @@ export function PreparingMutationRow({ toolName, useDisclosure, useToolCallArgum
           <>
             <span className={rowCss.sep} aria-hidden />
             <span className={rowCss.summary}><TextShimmer>{summary}</TextShimmer></span>
+            {size !== null && <span className={rowCss.summarySuffix}>{size}</span>}
           </>
         )}
       />
@@ -261,16 +301,23 @@ export function StartedMutationRow({
   toolName, block, cwd, openFile, inspect, useDisclosure, t,
 }: StartedRowProps) {
   const { expanded, setExpanded, toggle } = useDisclosure()
-  // A live session mounts the row while its call is still running (collapsed)
-  // and settles it in place, so the default-open rule fires both when the row
-  // first appears already settled (replayed history) and once on the
-  // running→settled transition; a manually toggled row keeps its state until
-  // the enclosing Turn hides it (the hook's own reset).
-  const wasSettled = useRef(false)
+  // The default-open rule is decided once per row, and only for work the user is
+  // watching: a live session mounts the row while its call is still running and
+  // settles it in place, so the running→settled transition is the case this rule
+  // is for. A row that mounts already settled is history — a replayed or
+  // reloaded session, or a Turn the user just unfolded — and Chat's
+  // collapse-timing setting owns how that history presents; expanding it here is
+  // what kept every finished edit's diff rendered inside an already-folded Turn.
+  // `block.time` is the result event's own stamp, which keeps a call that
+  // finished moments ago (both stages projected before the first render) opening
+  // as it should.
+  const decided = useRef(false)
   useEffect(() => {
-    const settled = 'kind' in block
-    if (settled && !wasSettled.current && defaultOpenFor(toolName, block)) setExpanded(true)
-    wasSettled.current = settled
+    if (decided.current) return
+    if (!('kind' in block) || !defaultOpenFor(toolName, block)) return
+    decided.current = true
+    if (Date.now() - block.time > RECENT_RESULT_MS) return
+    setExpanded(true)
   }, [toolName, block, setExpanded])
   const model = rowModel(toolName, block, cwd)
   const diffBody = diffCardModel(block)

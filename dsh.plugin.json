@@ -1,12 +1,12 @@
 {
   "id": "@dsh-external/dsh-diff-viewer",
-  "version": "0.4.0",
+  "version": "0.5.1",
   "main": "./lib/index.js",
   "client": {
     "main": "./lib/client.js",
     "inject": []
   },
   "engines": {
-    "dsh": ">=0.2.0-rc.2"
+    "dsh": ">=0.2.1-rc.2"
   }
 }

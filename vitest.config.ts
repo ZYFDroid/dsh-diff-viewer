@@ -50,6 +50,10 @@ export default defineConfig({
       { find: '@deepseek-ai/dsh-client-store', replacement: `${fork}/store/src/index.ts` },
       { find: '@deepseek-ai/dsh-util-workspace-path', replacement: `${fork}/../util/workspace-path/src/index.ts` },
       { find: '@deepseek-ai/dsh-util-code-language', replacement: `${fork}/../util/code-language/src/index.ts` },
+      // dsh 0.2.1-rc.2: tool blocks carry the lazy argument view, whose class
+      // (`PartialArguments`) is nominal — specs must build the real one, so the
+      // zero-dependency utility package resolves to its src for tests.
+      { find: '@deepseek-ai/dsh-util-values', replacement: `${fork}/../util/values/src/index.ts` },
       { find: '@deepseek-ai/dsh-client-test-runtime', replacement: `${fork}/../test-support/client-runtime/src/index.ts` },
       { find: '@deepseek-ai/dsh-client-test-runtime/client', replacement: `${fork}/../test-support/client-runtime/src/client/index.ts` },
     ],
