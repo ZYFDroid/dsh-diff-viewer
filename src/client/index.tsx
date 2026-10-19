@@ -12,14 +12,16 @@
 
 // The client context type: cordis' Context merged with the plugin surfaces
 // referenced below (ui-renderer's ctx.slots via the type-only import; the
-// old `@deepseek-ai/dsh-client-runtime/client` module was removed upstream,
-// dsh 0.1.2+, and plugins now type the apply parameter as the plain cordis
-// Context and pull each service's Context merge with type-only imports).
+// removed `@deepseek-ai/dsh-client-runtime/client` package has no successor —
+// plugins type the apply parameter as the plain cordis Context and pull each
+// service's Context merge with type-only imports).
 import type { Context as ClientContext } from '@deepseek-ai/cordis'
-// Type-only: pulls the SlotRegistry Context merge (ctx.slots) — the slots
-// service lives in the ui-renderer package (moved out of the removed
-// client-runtime).
+// Type-only: pulls the SlotRegistry Context merge (ctx.slots) with the current
+// `tool.call.toolview` SlotMap declaration (owner phase props, slot-level
+// inject hooks) — the slots service lives in ui-renderer, the Tool slot
+// contract in ui-tool.
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
+import type {} from '@deepseek-ai/dsh-client-ui-tool/client'
 import { MutationRow } from './mutation-row.tsx'
 
 /** Required service: the slot registry. */
@@ -27,6 +29,14 @@ export const inject = ['slots']
 
 /** The tool keys this plugin takes over (the wire tools that emit diff cards). */
 const MUTATION_TOOLS = ['edit', 'write'] as const
+
+/**
+ * Dictionary namespace the takeover row's copy is translated through; the
+ * stock FileMutationRow registers under the same one, so titles, states, and
+ * the IN/OUT/inspect chrome follow the active locale exactly as the row it
+ * replaces does.
+ */
+const NS = 'conversation'
 
 /**
  * Mount the DiffViewer rows into the keyed atomic Tool view slot under the
@@ -39,6 +49,7 @@ export function apply(ctx: ClientContext): void {
       yield ctx.slots.register({
         name: 'tool.call.toolview',
         key,
+        locale: NS,
         priority: -1,
       }, MutationRow)
     }

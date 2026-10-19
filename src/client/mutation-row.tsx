@@ -5,26 +5,71 @@
  * the row looks and behaves exactly like the shipped one — only the expanded
  * diff card renders through this plugin's DiffViewer instead of DiffBlock.
  *
- * The row model derivation (title/summary/path/output/error/state) mirrors
- * the stock tool-call model for the edit/write variants; the CSS classes come
- * from the ui-tool package's exported src subpath (inlined into this bundle).
+ * dsh 0.2.1-rc.2 contract: the keyed `tool.call.toolview` owner supplies one
+ * explicit phase (`preparing` | `start` | `result`), each carrying a lazy `args`
+ * view over the call's top-level fields (incomplete while preparing), plus the
+ * framework's `useDisclosure` hook (bound to the enclosing Turn's reset source,
+ * so a row hidden by its Turn comes back collapsed) and the localized `t` seat
+ * declared by this plugin's registration (`locale: 'conversation'`). The row
+ * model derivation (title/summary/path/output/error/state) mirrors the stock
+ * tool-call model for the edit/write variants; the CSS classes come from the
+ * ui-tool package's exported src subpath (inlined into this bundle).
+ *
+ * `MutationRow` is the registered component; the two phase components below it
+ * take only the inputs they read, so a spec can render the row without
+ * standing up the framework's session seats.
  */
-import { useEffect, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
+import { useEffect, useRef, type KeyboardEvent, type MouseEvent, type ReactNode } from 'react'
 import clsx from 'clsx'
 import {
-  DisclosureRow, IconEditOutline16, IconInspectOutline12, StateDot,
+  DisclosureRow, IconEditOutlineRegular, IconInspectOutlineRegular, StateDot, TextShimmer,
 } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { ToolCallBlock, ToolResultNode } from '@deepseek-ai/dsh-client-ui-chat/client'
+import type {
+  OpenFileOptions, PreparingToolCall, StartedToolCall, ToolResultNode, UseDisclosure,
+} from '@deepseek-ai/dsh-client-ui-chat/client'
+import type { PropsLocale, TranslateNS } from '@deepseek-ai/dsh-client-ui-slots'
+import type { ToolCallViewProps } from '@deepseek-ai/dsh-client-ui-tool/client'
 // The stock row's stylesheet, imported through the package's exported src
 // subpath and inlined — the takeover row renders with the exact stock chrome.
 import rowCss from '@deepseek-ai/dsh-client-ui-tool/src/client/tool/components/ToolRow.module.css'
 import { DiffViewer } from './DiffViewer.tsx'
-import { diffCardModel } from './diffcard-contract.ts'
+import { diffCardModel, type LazyToolArgs } from './diffcard-contract.ts'
 
 /** Row state semantic; colors self-supplied via StateDot. */
-type ToolRowState = 'running' | 'ok' | 'error' | 'stopped'
+type MutationRowState = 'running' | 'ok' | 'error' | 'stopped'
 /** Row variant for the mutation tools this plugin owns. */
-type ToolRowVariant = 'write' | 'edit'
+type MutationRowVariant = 'write' | 'edit'
+/** A mutation call that has left the preparing phase. */
+type DispatchedBlock = StartedToolCall | ToolResultNode
+/** The conversation translate seat this row's copy goes through. */
+type Translate = TranslateNS<'conversation'>
+
+/** Full props of the registered takeover row: the keyed toolview owner
+ *  currency plus the locale seat this plugin's registration declares. */
+export type MutationRowProps = ToolCallViewProps & PropsLocale<'conversation'>
+
+/** Inputs of the dispatched/settled row (the seats it actually reads). */
+export interface StartedRowProps {
+  toolName: string
+  block: DispatchedBlock
+  cwd?: string | undefined
+  openFile: (path: string, options?: OpenFileOptions) => void
+  inspect?: (() => void) | undefined
+  useDisclosure: UseDisclosure
+  t: Translate
+}
+
+/** Inputs of the preparing row (the seats it actually reads). */
+export interface PreparingRowProps {
+  toolName: string
+  /** The preparing block: the tool is named, its arguments are still arriving. */
+  block: PreparingToolCall
+  useDisclosure: UseDisclosure
+  t: Translate
+}
+
+/** The row's shared icon (stock FileMutationRow chrome). */
+const MUTATION_ICON = <IconEditOutlineRegular size={14} />
 
 /** Flatten a settled result's content blocks to display text (stock resultText). */
 function resultText(node: ToolResultNode): string {
@@ -53,24 +98,65 @@ function parseArgs(argsRaw: string): Record<string, unknown> | undefined {
   }
 }
 
-/** Derive the row model for the edit/write variants (stock toolRowModel mirror;
- *  the stock model additionally abbreviates a POSIX-home-rooted summary to `~`,
- *  which this mirror skips — the plugin never receives `home` from the slot
- *  owner it declares). */
-function rowModel(toolName: string, block: ToolCallBlock, cwd?: string): {
-  variant: ToolRowVariant
-  title: string
+/** Decoded-input granularity: the stock row reports whole kilobytes. */
+const KILOBYTE = 1024
+
+/**
+ * How recently a result must have landed for its card to count as the call the
+ * user is watching. A row that mounts already settled with an older stamp is
+ * history, which the Turn fold and Chat's collapse-timing setting own.
+ */
+const RECENT_RESULT_MS = 60_000
+
+/** The mutation arguments that carry the caller's replacement text. */
+const CONTENT_FIELDS = ['content', 'old_string', 'new_string'] as const
+
+/**
+ * Kilobytes of decoded mutation input at any stage of the call, or null before
+ * a content field has appeared. Mirrors the stock file-mutation row: completed
+ * fields count in full and the one still streaming counts at its current
+ * length, so the figure grows in place while the model writes.
+ * @param args - the block's lazy argument view.
+ * @returns the size in whole kilobytes, or null when the call still carries no content.
+ */
+export function contentKilobytes(args: LazyToolArgs): number | null {
+  const open = CONTENT_FIELDS.find(key => args.has(key) && !args.complete(key))
+  const completed = CONTENT_FIELDS.reduce((total, key) => key !== open && args.complete(key)
+    ? total + (args.stringLength(key, { step: KILOBYTE }) ?? 0) : total, 0)
+  if (open === undefined) {
+    return CONTENT_FIELDS.some(key => args.has(key)) ? Math.ceil(completed / KILOBYTE) : null
+  }
+  const chars = completed + (args.stringLength(open, { step: KILOBYTE, offset: completed }) ?? 0)
+  return Math.ceil(chars / KILOBYTE)
+}
+
+/** Row variant per wire Tool name (the two keys this plugin takes over). */
+function variantOf(toolName: string): MutationRowVariant {
+  return toolName === 'edit' ? 'edit' : 'write'
+}
+
+/** The stock row's title key per wire Tool name. */
+function titleKeyOf(toolName: string): 'tool.title.edit' | 'tool.title.write' {
+  return toolName === 'edit' ? 'tool.title.edit' : 'tool.title.write'
+}
+
+/** Derive the row model for the edit/write variants (stock toolRowModel
+ *  mirror; the stock model additionally abbreviates a POSIX-home-rooted
+ *  summary to `~`, which this mirror skips — the plugin never receives `home`
+ *  from the slot owner it registers for). */
+function rowModel(toolName: string, block: DispatchedBlock, cwd?: string): {
+  variant: MutationRowVariant
   summary: string
   filePath: string | undefined
   body: string | null
   output: string | null
   errorSummary: string | null
-  state: ToolRowState
+  state: MutationRowState
 } {
-  const variant = (toolName === 'edit' ? 'edit' : 'write') as ToolRowVariant
-  const done = 'kind' in block
-  const argsRaw = (done ? block.call?.argsRaw : block.argsRaw) ?? ''
-  const state: ToolRowState = !done ? 'running'
+  const variant = variantOf(toolName)
+  const settled = 'kind' in block
+  const argsRaw = (settled ? block.call?.argsRaw : block.argsRaw) ?? ''
+  const state: MutationRowState = !settled ? 'running'
     : block.error?.code === 'interrupted' ? 'stopped'
       : block.isError ? 'error' : 'ok'
   const parsed = parseArgs(argsRaw)
@@ -86,10 +172,9 @@ function rowModel(toolName: string, block: ToolCallBlock, cwd?: string): {
     return text
   }
   const summary = path !== undefined ? rel(path) : firstLine(argsRaw === '' ? block.callId : argsRaw)
-  const output = done ? (resultText(block) || null) : null
+  const output = settled ? (resultText(block) || null) : null
   return {
     variant,
-    title: variant === 'edit' ? 'Edit' : 'Write',
     summary,
     filePath: path,
     body: argsRaw === '' ? null : (parsed !== undefined ? JSON.stringify(parsed, null, 2) : argsRaw),
@@ -100,7 +185,7 @@ function rowModel(toolName: string, block: ToolCallBlock, cwd?: string): {
 }
 
 /** Leading-slot state substitution (stock): icon yields to the state semantic. */
-function leadingFor(state: ToolRowState, icon: ReactNode): ReactNode {
+function leadingFor(state: MutationRowState, icon: ReactNode): ReactNode {
   switch (state) {
     case 'error': return <StateDot state="error" />
     case 'stopped': return <StateDot state="warning" />
@@ -109,23 +194,13 @@ function leadingFor(state: ToolRowState, icon: ReactNode): ReactNode {
 }
 
 /** Visually hidden run-state label (stock AT requirement). */
-function stateStatus(state: ToolRowState): string | null {
+function stateStatus(state: MutationRowState, t: Translate): string | null {
   switch (state) {
-    case 'running': return 'Running'
-    case 'error': return 'Failed'
-    case 'stopped': return 'Stopped'
+    case 'running': return t('row.running')
+    case 'error': return t('row.failed')
+    case 'stopped': return t('row.stopped')
     default: return null
   }
-}
-
-/** Full props of the taken-over row (the stock ToolCallOwnerProps currency). */
-export interface MutationRowProps {
-  callId: string
-  toolName: string
-  block: ToolCallBlock
-  cwd?: string | undefined
-  openFile: (path: string) => void
-  inspect?: (() => void) | undefined
 }
 
 /**
@@ -133,45 +208,126 @@ export interface MutationRowProps {
  * shows its replacement diff without a click — the issue-driven default
  * (「edit 的结果卡片默认展开」). Writes keep the stock collapsed default (a
  * whole-file diff is bulk), and running or errored rows stay collapsed so the
- * flow never auto-expands transient or error-only cards. Pure for direct
- * testing.
+ * flow never auto-expands transient or error-only cards. The caller also gates
+ * this on the call being one the user is watching (see `RECENT_RESULT_MS`):
+ * replayed history stays collapsed. Pure for direct testing.
  * @param toolName - the wire Tool name.
- * @param block - the frozen running or settled call slice.
+ * @param block - the frozen dispatched or settled call slice.
  * @returns whether the row's expanded body should start open.
  */
-export function defaultOpenFor(toolName: string, block: ToolCallBlock): boolean {
+export function defaultOpenFor(toolName: string, block: DispatchedBlock): boolean {
   return toolName === 'edit' && 'kind' in block && !block.isError
 }
 
 /**
- * The mutation row: stock FileMutationRow chrome (DisclosureRow, state dot,
- * path link, error summary, IN/OUT card) with the expanded diff card rendered
- * through DiffViewer.
- * @param props - toolview owner currency.
+ * The registered mutation toolview: one explicit phase per dispatch, exactly
+ * like the stock FileMutationRow (a preparing call has no dispatchable body).
+ * @param props - keyed toolview owner currency plus the locale seat.
+ * @returns the preparing or dispatched row.
  */
-export function MutationRow({ toolName, block, cwd, openFile, inspect }: MutationRowProps) {
-  // A live session mounts the row while its call is still running (collapsed)
-  // and settles it in place, so the default-open rule also fires once on the
-  // running→settled transition; a manually toggled row keeps its state until
-  // the next transition.
-  const [expanded, setExpanded] = useState(() => defaultOpenFor(toolName, block))
-  const runningRef = useRef(!('kind' in block))
+export function MutationRow(props: MutationRowProps) {
+  return props.phase === 'preparing'
+    ? (
+      <PreparingMutationRow
+        toolName={props.toolName}
+        block={props.block}
+        useDisclosure={props.useDisclosure}
+        t={props.t}
+      />
+    )
+    : (
+      <StartedMutationRow
+        toolName={props.toolName}
+        block={props.block}
+        cwd={props.cwd}
+        openFile={props.openFile}
+        inspect={props.inspect}
+        useDisclosure={props.useDisclosure}
+        t={props.t}
+      />
+    )
+}
+
+/**
+ * The preparing prefix: stock chrome for a named call whose arguments are still
+ * arriving. The path appears as soon as its string closes (the model is told to
+ * emit `file_path` first), the decoded input size grows beside it, and there is
+ * no disclosure yet — nothing is dispatched to expand.
+ * @param props - preparing-phase row inputs.
+ * @returns the non-expandable preparing row.
+ */
+export function PreparingMutationRow({ toolName, block, useDisclosure, t }: PreparingRowProps) {
+  const { expanded, toggle } = useDisclosure()
+  // A half-streamed path would truncate mid-directory and name the wrong file,
+  // so the path shows only once its closing quote arrived (stock rule).
+  const closedPath = block.args.complete('file_path') ? block.args.text('file_path') : undefined
+  const summary = closedPath === undefined || closedPath === '' ? firstLine(block.callId) : firstLine(closedPath)
+  const kilobytes = contentKilobytes(block.args)
+  const size = kilobytes === null ? null : t('tool.preparing.content', { kilobytes })
+  return (
+    <div className={rowCss.root} data-variant={variantOf(toolName)} data-tool={toolName}
+      data-state="preparing" data-diff-viewer-row="">
+      <span className={rowCss.visuallyHidden}>{t('row.preparing')}</span>
+      <DisclosureRow
+        rowClassName={rowCss.row}
+        leadingClassName={rowCss.leading}
+        titleClassName={rowCss.title}
+        icon={MUTATION_ICON}
+        title={t(titleKeyOf(toolName))}
+        running
+        open={expanded}
+        expandable={false}
+        onToggle={toggle}
+        collapsedContent={(
+          <>
+            <span className={rowCss.sep} aria-hidden />
+            <span className={rowCss.summary}><TextShimmer>{summary}</TextShimmer></span>
+            {size !== null && <span className={rowCss.summarySuffix}>{size}</span>}
+          </>
+        )}
+      />
+    </div>
+  )
+}
+
+/**
+ * The dispatched/settled row: stock FileMutationRow chrome (DisclosureRow,
+ * state dot, path link, error summary, IN/OUT card) with the expanded diff
+ * card rendered through DiffViewer.
+ * @param props - dispatched/settled row inputs.
+ * @returns the disclosure row.
+ */
+export function StartedMutationRow({
+  toolName, block, cwd, openFile, inspect, useDisclosure, t,
+}: StartedRowProps) {
+  const { expanded, setExpanded, toggle } = useDisclosure()
+  // The default-open rule is decided once per row, and only for work the user is
+  // watching: a live session mounts the row while its call is still running and
+  // settles it in place, so the running→settled transition is the case this rule
+  // is for. A row that mounts already settled is history — a replayed or
+  // reloaded session, or a Turn the user just unfolded — and Chat's
+  // collapse-timing setting owns how that history presents; expanding it here is
+  // what kept every finished edit's diff rendered inside an already-folded Turn.
+  // `block.time` is the result event's own stamp, which keeps a call that
+  // finished moments ago (both stages projected before the first render) opening
+  // as it should.
+  const decided = useRef(false)
   useEffect(() => {
-    const settled = 'kind' in block
-    if (runningRef.current && settled && defaultOpenFor(toolName, block)) setExpanded(true)
-    runningRef.current = !settled
-  }, [toolName, block])
+    if (decided.current) return
+    if (!('kind' in block) || !defaultOpenFor(toolName, block)) return
+    decided.current = true
+    if (Date.now() - block.time > RECENT_RESULT_MS) return
+    setExpanded(true)
+  }, [toolName, block, setExpanded])
   const model = rowModel(toolName, block, cwd)
-  const diff = diffCardModel(block)
-  const diffBody = diff ?? null
+  const diffBody = diffCardModel(block)
   const outputText = model.output
   const expandable = model.body !== null || outputText !== null || diffBody !== null
   const open = expanded && expandable
-  const status = stateStatus(model.state)
+  const status = stateStatus(model.state, t)
   const failureLine = model.state === 'error' ? model.errorSummary ?? null : null
   const summaryText = failureLine ?? model.summary
   const fileLink = model.filePath !== undefined && failureLine === null
-  const toggleExpand = () => { setExpanded(v => !v) }
   const openFilePath = (event: MouseEvent<HTMLButtonElement>) => {
     event.stopPropagation()
     if (model.filePath !== undefined) openFile(model.filePath)
@@ -180,30 +336,31 @@ export function MutationRow({ toolName, block, cwd, openFile, inspect }: Mutatio
     if (event.key === 'Enter' || event.key === ' ') event.stopPropagation()
   }
   return (
-    <div className={rowCss.root} data-variant={model.variant} data-tool={toolName} data-state={model.state} data-diff-viewer-row="">
+    <div className={rowCss.root} data-variant={model.variant} data-tool={toolName}
+      data-state={model.state} data-diff-viewer-row="">
       {status !== null && <span className={rowCss.visuallyHidden}>{status}</span>}
       <DisclosureRow
         rowClassName={rowCss.row}
         leadingClassName={rowCss.leading}
         titleClassName={rowCss.title}
-        chevronClassName={rowCss.chevron}
-        icon={leadingFor(model.state, <IconEditOutline16 size={14} />)}
-        title={model.title}
+        icon={leadingFor(model.state, MUTATION_ICON)}
+        title={t(titleKeyOf(toolName))}
+        running={model.state === 'running'}
         open={open}
         expandable={expandable}
         expandOnRowClick
         keepContentWhenOpen
-        onToggle={toggleExpand}
+        onToggle={toggle}
         collapsedContent={summaryText !== '' && (
           <>
             <span className={rowCss.sep} aria-hidden />
             {fileLink ? (
               <button type="button" className={rowCss.fileLink} onClick={openFilePath} onKeyDown={fileLinkKeyDown}>
-                {summaryText}
+                <TextShimmer>{summaryText}</TextShimmer>
               </button>
             ) : (
               <span className={clsx(rowCss.summary, failureLine !== null && rowCss.errorSummary)}>
-                {summaryText}
+                <TextShimmer>{summaryText}</TextShimmer>
               </span>
             )}
           </>
@@ -220,7 +377,7 @@ export function MutationRow({ toolName, block, cwd, openFile, inspect }: Mutatio
                   <div className={rowCss.ioCard}>
                     {model.body !== null && (
                       <div className={rowCss.ioSection}>
-                        <span className={rowCss.ioLabel}>IN</span>
+                        <span className={rowCss.ioLabel}>{t('row.input')}</span>
                         <span className={rowCss.ioText}>{model.body}</span>
                       </div>
                     )}
@@ -229,7 +386,7 @@ export function MutationRow({ toolName, block, cwd, openFile, inspect }: Mutatio
                     )}
                     {outputText !== null && (
                       <div className={rowCss.ioSection}>
-                        <span className={rowCss.ioLabel}>OUT</span>
+                        <span className={rowCss.ioLabel}>{t('row.output')}</span>
                         <span className={rowCss.ioText} data-error={model.state === 'error' || undefined}>
                           {outputText}
                         </span>
@@ -241,8 +398,8 @@ export function MutationRow({ toolName, block, cwd, openFile, inspect }: Mutatio
             )}
           {inspect !== undefined && (
             <button type="button" className={rowCss.inspectButton} onClick={inspect}>
-              <IconInspectOutline12 />
-              Inspect
+              <IconInspectOutlineRegular />
+              {t('row.inspect')}
             </button>
           )}
         </div>
